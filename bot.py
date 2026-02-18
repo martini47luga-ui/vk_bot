@@ -412,8 +412,8 @@ scheduler_thread = threading.Thread(target=run_schedule, daemon=True)
 scheduler_thread.start()
 
 # Принудительный тестовый вызов публикации (для проверки)
-logger.info("Тестовый вызов job_publish_news()...")
-job_publish_news()
+# logger.info("Тестовый вызов job_publish_news()...")
+# job_publish_news()
 
 # ---------- Основной цикл обработки сообщений ----------
 logger.info("Бот запущен и ожидает сообщения...")
