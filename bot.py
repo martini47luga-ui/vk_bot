@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
+import json
+import os
 
 # Загружаем переменные окружения из файла .env
 load_dotenv()
@@ -36,6 +38,12 @@ logger = logging.getLogger(__name__)
 vk_session = vk_api.VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
+
+# ---------- Конфигурация репостов ----------
+REPOST_SOURCES = [-72378974, -39243732]  # ID групп с минусом (Мой Компьютер и Типичный сисадмин)
+REPOST_FILE = "reposted_posts.json"       # файл для хранения ID уже репостнутых постов
+REPOST_MESSAGE = "🔧 Полезное из мира IT" # комментарий к репосту (можно изменить)
+# -----------------------------------------
 
 # ---------- Хранилище контекста для диалогов ----------
 context = {}
@@ -225,6 +233,73 @@ def ask_openrouter_with_context(user_id, user_message):
             return "Извините, сервис временно недоступен. Попробуйте позже."
     return "Произошла неизвестная ошибка."
 
+# ---------- Функции для репостов ----------
+def load_reposted():
+    """Загружает список уже репостнутых постов из файла."""
+    if not os.path.exists(REPOST_FILE):
+        return set()
+    try:
+        with open(REPOST_FILE, 'r', encoding='utf-8') as f:
+            return set(json.load(f))
+    except:
+        return set()
+
+def save_reposted(post_id):
+    """Добавляет ID поста в список репостнутых."""
+    reposted = load_reposted()
+    reposted.add(post_id)
+    with open(REPOST_FILE, 'w', encoding='utf-8') as f:
+        json.dump(list(reposted), f, ensure_ascii=False, indent=2)
+
+def get_latest_posts(group_id, count=2):
+    """Получает последние посты из группы."""
+    try:
+        posts = vk.wall.get(owner_id=group_id, count=count)
+        return posts['items']
+    except Exception as e:
+        logger.error(f"Ошибка получения постов из группы {group_id}: {e}")
+        return []
+
+def repost_post(post_owner_id, post_id, message=""):
+    """Делает репост записи на стену сообщества."""
+    object_id = f"wall{post_owner_id}_{post_id}"
+    try:
+        vk.wall.repost(
+            object=object_id,
+            message=message,
+            group_id=abs(COMMUNITY_ID)  # ID вашей группы (положительное число)
+        )
+        logger.info(f"Репост успешен: {object_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка репоста {object_id}: {e}")
+        return False
+
+def repost_job():
+    """Задача для автоматического репоста (вызывается по расписанию)."""
+    logger.info("Запуск задачи репостов")
+    reposted = load_reposted()
+    
+    for group_id in REPOST_SOURCES:
+        logger.info(f"Проверяем группу {group_id}")
+        posts = get_latest_posts(group_id, count=2)  # берём 2 последних поста
+        
+        for post in posts:
+            post_key = f"{group_id}_{post['id']}"
+            if post_key in reposted:
+                logger.debug(f"Пост {post_key} уже репостнут, пропускаем")
+                continue
+            
+            # Делаем репост
+            success = repost_post(group_id, post['id'], REPOST_MESSAGE)
+            if success:
+                save_reposted(post_key)
+                time.sleep(30)  # пауза между репостами, чтобы не спамить
+            else:
+                time.sleep(10)
+    
+    logger.info("Задача репостов завершена")
+
 # ---------- Функции для публикации новостей ----------
 def fetch_news(limit=3):
     """Получает новости из RSS 3DNews с изображениями."""
@@ -323,9 +398,11 @@ def job_publish_news():
 
 def run_schedule():
     """Запускает планировщик в отдельном потоке."""
-    # schedule.every().day.at("12:00").do(job_publish_news)
+    schedule.every().day.at("12:00").do(job_publish_news)
+    schedule.every().day.at("10:00").do(repost_job)  # репосты в 10 утра
+    schedule.every().day.at("18:00").do(repost_job)  # и в 6 вечера
     # Для теста можно запускать каждые 10 минут:
-    schedule.every(10).minutes.do(job_publish_news)
+    # schedule.every(10).minutes.do(job_publish_news)
     while True:
         schedule.run_pending()
         time.sleep(60)
